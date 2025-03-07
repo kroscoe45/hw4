@@ -1,4 +1,5 @@
 class Api::PlaylistsController < ApplicationController
+  include ParameterValidation
   before_action :authenticate_request!, except: [:index, :show, :tracks]
   before_action :set_playlist, except: [:index, :create]
   before_action -> { require_ownership!(@playlist) }, only: [:update, :destroy, :add_track, :remove_track, :update_tracks, :remove_tag]
@@ -114,17 +115,9 @@ class Api::PlaylistsController < ApplicationController
 
   # PUT /api/playlists/:id/tracks
   def update_tracks
-    track_ids = params[:track_ids]&.map(&:to_i) || []
+    track_ids, error = parse_ids(:track_ids)
+    return render error if error
 
-    # if the track_ids array is empty, return no change code
-    if track_ids.empty?
-      return render json: { message: "No changes made to tracks" }, status: :no_content
-    end
-    
-    unless track_ids.is_a?(Array)
-      return render json: { error: "Track IDs must be an array" }, status: :bad_request
-    end
-    
     if @playlist.update_track_list(track_ids)
       render json: @playlist.full_tracks
     else
@@ -132,12 +125,12 @@ class Api::PlaylistsController < ApplicationController
     end
   end
 
-  # POST /api/playlists/:id/tags/:
+  # POST /api/playlists/:id/tags
   def add_tag
-    tag_name = params[:tag_name]
-    if tag_name.blank?
-      return render json: { error: "Tag name is required" }, status: :bad_request
-    end
+    tag_name, error = validate_tag_name(params[:tag_name])
+    return render error if error
+    tag_id, error = parse_ids(:tag_id)
+
     Tag.transaction do
       tag_name = tag_name.strip
       # If the tag is already in the database and attached to the playlist, return an error
@@ -184,4 +177,33 @@ class Api::PlaylistsController < ApplicationController
     params.require(:playlist).permit(:title, :is_public)
   end
 
+  def create_new_tag(tag_name)
+    tag = Tag.new(name: tag_name)
+    tag.attached_to = { @playlist.id.to_s => { 
+      "vote_up" => [], 
+      "vote_down" => [], 
+      "suggested_by" => current_user.id.to_s 
+    }}
+    
+    tag.save
+    tag
+  end
+
+  def add_existing_tag(tag)
+    if tag.attached_to[@playlist.id.to_s].nil?
+      tag.attached_to[@playlist.id.to_s] = {
+        "vote_up" => [],
+        "vote_down" => [],
+        "suggested_by" => current_user.id.to_s
+      }
+      
+      unless tag.save
+        return { json: { errors: tag.errors.full_messages }, status: :unprocessable_entity }
+      end
+    else
+      # Tag already attached to this playlist
+      return { json: { message: "Tag already added to this playlist" }, status: :ok }
+    end
+    nil
+  end
 end
