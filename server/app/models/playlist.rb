@@ -49,10 +49,12 @@ class Playlist < ApplicationRecord
   
   # Update the entire track list (for reordering)
   def update_track_list(track_ids)
+    # doing this in the playlist api instead
     # Ensure all IDs are valid
-    track_ids = track_ids.map(&:to_s)
+    # track_ids = track_ids.map(&:to_s)
     
     # Validate all tracks exist
+    # is this optimal? idk if this does multiple queries or just one
     existing_tracks = Track.where(id: track_ids).pluck(:id).map(&:to_s)
     missing_tracks = track_ids - existing_tracks
     
@@ -61,7 +63,7 @@ class Playlist < ApplicationRecord
       return false
     end
     
-    # Update the list
+    # update playlist
     self.tracks = track_ids
     save
   end

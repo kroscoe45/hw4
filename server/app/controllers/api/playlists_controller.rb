@@ -114,10 +114,11 @@ class Api::PlaylistsController < ApplicationController
 
   # PUT /api/playlists/:id/tracks
   def update_tracks
-    track_ids = params[:track_ids]
-    
-    if track_ids.nil?
-      return render json: { error: "Track IDs array is required" }, status: :bad_request
+    track_ids = params[:track_ids]&.map(&:to_i) || []
+
+    # if the track_ids array is empty, return no change code
+    if track_ids.empty?
+      return render json: { message: "No changes made to tracks" }, status: :no_content
     end
     
     unless track_ids.is_a?(Array)
