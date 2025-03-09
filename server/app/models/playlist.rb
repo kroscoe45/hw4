@@ -1,10 +1,12 @@
 class Playlist < ApplicationRecord
+  include Paginatable
+
   belongs_to :owner, class_name: 'User'
   
   validates :title, presence: true
   validate :validate_track_ids
   validate :validate_tag_ids
-  
+
   # Ensure arrays are always returned, even if NULL in database
   def tracks
     self[:tracks] || []
@@ -68,6 +70,26 @@ class Playlist < ApplicationRecord
     save
   end
   
+def self.filter_by_params(params, user = nil)
+  playlists = if params[:owner_id].present?
+    by_owner(params[:owner_id])
+  elsif params[:tag_id].present?
+    with_tag(params[:tag_id])
+  elsif params[:track_id].present?
+    with_track(params[:track_id])
+  else
+    all
+  end
+  
+  # Filter for public playlists unless user is provided
+  playlists = playlists.public_playlists unless user
+  
+  # Apply optional sorting
+  playlists = playlists.recent if params[:sort] == 'recent'
+  
+  playlists
+end
+
   # Add a tag to the playlist with transaction safety
   def add_tag(tag_id, user_id)
     tag_id = tag_id.to_s
@@ -96,16 +118,15 @@ class Playlist < ApplicationRecord
       tag.update!(attached_to: attached_data)
       save!
     end
-    
     true
+  end
   rescue ActiveRecord::RecordNotFound
     errors.add(:tags, "Tag with ID #{tag_id} not found")
     false
   rescue ActiveRecord::RecordInvalid => e
     errors.add(:base, "Failed to add tag: #{e.message}")
     false
-  end
-  
+
   # Remove a tag from the playlist with transaction safety
   def remove_tag(tag_id)
     tag_id = tag_id.to_s
@@ -129,8 +150,8 @@ class Playlist < ApplicationRecord
       tag.update!(attached_to: attached_data)
       save!
     end
-    
     true
+  end
   rescue ActiveRecord::RecordNotFound
     # If tag doesn't exist, just remove it from our array
     self.tags = tags - [tag_id]
@@ -138,7 +159,6 @@ class Playlist < ApplicationRecord
   rescue ActiveRecord::RecordInvalid => e
     errors.add(:base, "Failed to remove tag: #{e.message}")
     false
-  end
   
   # Get all tracks as full objects in playlist order
   def full_tracks
@@ -155,8 +175,8 @@ class Playlist < ApplicationRecord
   scope :by_owner, ->(owner_id) { where(owner_id: owner_id) }
   scope :with_tag, ->(tag_id) { where("? = ANY(tags)", tag_id.to_s) }
   scope :with_track, ->(track_id) { where("? = ANY(tracks)", track_id.to_s) }
-  scope :recent, -> { order(created_at: :desc) }
-  
+  scop
+
   private
   
   # Validate that all track IDs reference existing tracks

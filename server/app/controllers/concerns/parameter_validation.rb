@@ -1,3 +1,6 @@
+# parameter should be validated BEFORE creating the actual resource
+# in the controller, basically on the first line of the api function thing
+
 module ParameterValidation
   extend ActiveSupport::Concern
   # convert string ids to array of integers with error handling
@@ -37,12 +40,12 @@ module ParameterValidation
   # [name, nil] on success
   # [nil, error_response] on failure
   def validate_tag_name(name)
-    if name.nil? || name.empty?
+    if name.nil? || name.blank?
       return [nil, { json: { error: "Tag name is required" }, status: :bad_request }]
     end
     if name.length < 2 || name.length > 20
       return [nil, { json: { error: "Tag name must be between 2 and 20 characters" }, status: :bad_request }]
     end
-    [name, nil]
+    [name.strip, nil]
   end
 end
