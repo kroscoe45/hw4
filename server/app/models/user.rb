@@ -17,6 +17,7 @@ class User < ApplicationRecord
   
   def owns?(resource)
     return false unless resource.respond_to?(:owner_id)
+    # Compare IDs directly as integers
     resource.owner_id == id
   end
 end

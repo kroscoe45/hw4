@@ -2,180 +2,173 @@ class Playlist < ApplicationRecord
   include Paginatable
 
   belongs_to :owner, class_name: 'User'
+  has_many :tags, dependent: :destroy
   
   validates :title, presence: true
   validate :validate_track_ids
-  validate :validate_tag_ids
-
-  # Ensure arrays are always returned, even if NULL in database
+  
   def tracks
     self[:tracks] || []
   end
   
-  def tags
-    self[:tags] || []
-  end
-  
   # Add a track to the playlist
-  # Always adds to the end of the list
   def add_track(track_id)
-    track_id = track_id.to_s
+    # Ensure we're working with integers
+    track_id = track_id.to_i
     
-    # Only add if not already in the playlist and track exists
-    unless tracks.include?(track_id)
-      # Verify track exists
+    # Don't add duplicates
+    return false if tracks.include?(track_id)
+    
+    # Verify the track exists
+    begin
       Track.find(track_id)
-      
-      # Add to array
-      self.tracks = tracks + [track_id]
-      save
-    else
-      true # Return success if track was already there
+    rescue ActiveRecord::RecordNotFound
+      errors.add(:tracks, "Track with ID #{track_id} not found")
+      return false
     end
-  rescue ActiveRecord::RecordNotFound
-    errors.add(:tracks, "Track with ID #{track_id} not found")
-    false
+    
+    # Add track and save
+    self.tracks = tracks + [track_id]
+    save
   end
   
   # Remove a track from the playlist
   def remove_track(track_id)
-    track_id = track_id.to_s
+    # Ensure we're working with integers
+    track_id = track_id.to_i
     
-    if tracks.include?(track_id)
-      self.tracks = tracks - [track_id]
-      save
-    else
-      true # Return success if track wasn't in the list
+    # Check if track is in the playlist
+    unless tracks.include?(track_id)
+      errors.add(:tracks, "Track with ID #{track_id} not found in playlist")
+      return false
     end
+    
+    # Remove track and save
+    self.tracks = tracks - [track_id]
+    save
   end
   
-  # Update the entire track list (for reordering)
+  # Update the entire track list
   def update_track_list(track_ids)
-    # doing this in the playlist api instead
-    # Ensure all IDs are valid
-    # track_ids = track_ids.map(&:to_s)
+    # Ensure we're working with integers
+    track_ids = track_ids.map(&:to_i)
     
-    # Validate all tracks exist
-    # is this optimal? idk if this does multiple queries or just one
-    existing_tracks = Track.where(id: track_ids).pluck(:id).map(&:to_s)
-    missing_tracks = track_ids - existing_tracks
+    # Verify all tracks exist
+    have_tracks = Track.where(id: track_ids).pluck(:id)
+    missing_tracks = track_ids - have_tracks
     
     if missing_tracks.any?
       errors.add(:tracks, "Tracks with IDs #{missing_tracks.join(', ')} not found")
       return false
     end
     
-    # update playlist
+    # Update tracks and save
     self.tracks = track_ids
     save
   end
   
-def self.filter_by_params(params, user = nil)
-  playlists = if params[:owner_id].present?
-    by_owner(params[:owner_id])
-  elsif params[:tag_id].present?
-    with_tag(params[:tag_id])
-  elsif params[:track_id].present?
-    with_track(params[:track_id])
-  else
-    all
+  # Add a tag to the playlist
+  def add_tag(name, user_id)
+    tags.create(name: name, user_id: user_id)
   end
   
-  # Filter for public playlists unless user is provided
-  playlists = playlists.public_playlists unless user
-  
-  # Apply optional sorting
-  playlists = playlists.recent if params[:sort] == 'recent'
-  
-  playlists
-end
-
-  # Add a tag to the playlist with transaction safety
-  def add_tag(tag_id, user_id)
-    tag_id = tag_id.to_s
-    user_id = user_id.to_s
-    
-    # Only add if not already in the playlist
-    return true if tags.include?(tag_id)
-    
-    # Use transaction to ensure data consistency
-    transaction do
-      # Verify tag exists
-      tag = Tag.find(tag_id)
-      
-      # Add to array
-      self.tags = tags + [tag_id]
-      
-      # Update the tag's attached_to field
-      attached_data = tag.attached_to || {}
-      attached_data[id.to_s] = { 
-        "voteUp" => [],
-        "voteDown" => [],
-        "suggestedBy" => user_id
-      }
-      
-      # Save both records
-      tag.update!(attached_to: attached_data)
-      save!
-    end
-    true
-  end
-  rescue ActiveRecord::RecordNotFound
-    errors.add(:tags, "Tag with ID #{tag_id} not found")
-    false
-  rescue ActiveRecord::RecordInvalid => e
-    errors.add(:base, "Failed to add tag: #{e.message}")
-    false
-
-  # Remove a tag from the playlist with transaction safety
+  # Remove a tag from the playlist
   def remove_tag(tag_id)
-    tag_id = tag_id.to_s
+    tag = tags.find_by(id: tag_id)
+    return false unless tag
     
-    # Only remove if in the playlist
-    return true unless tags.include?(tag_id)
-    
-    # Use transaction to ensure data consistency
-    transaction do
-      # Verify tag exists
-      tag = Tag.find(tag_id)
-      
-      # Remove from array
-      self.tags = tags - [tag_id]
-      
-      # Update the tag's attached_to field
-      attached_data = tag.attached_to || {}
-      attached_data.delete(id.to_s)
-      
-      # Save both records
-      tag.update!(attached_to: attached_data)
-      save!
-    end
+    tag.destroy
     true
   end
-  rescue ActiveRecord::RecordNotFound
-    # If tag doesn't exist, just remove it from our array
-    self.tags = tags - [tag_id]
-    save
-  rescue ActiveRecord::RecordInvalid => e
-    errors.add(:base, "Failed to remove tag: #{e.message}")
-    false
+  
+  # Get all tags for this playlist
+  def full_tags
+    tags.includes(:user_votes, :user)
+  end
+  
+  # Get paginated tags
+  def paginated_tags(params)
+    page = [params[:page].to_i, 1].max
+    per_page = [[params[:per_page].to_i, 20].max, 100].min
+    
+    tags_relation = tags.includes(:user_votes, :user)
+    
+    # Apply optional sorting
+    tags_relation = case params[:sort]
+    when 'popular'
+      tags_relation.popular
+    when 'recent'
+      tags_relation.recent
+    when 'alphabetical'
+      tags_relation.alphabetical
+    else
+      tags_relation
+    end
+    
+    result = tags_relation.limit(per_page).offset((page - 1) * per_page)
+    
+    {
+      records: result,
+      meta: {
+        total_count: tags_relation.count,
+        current_page: page,
+        per_page: per_page,
+        total_pages: (tags_relation.count.to_f / per_page).ceil
+      }
+    }
+  end
+  
+  # Class method to filter playlists by various parameters
+  def self.filter_by_params(params, user = nil)
+    playlists = if params[:owner_id].present?
+      by_owner(params[:owner_id])
+    elsif params[:tag_name].present?
+      Tag.find_playlists_with_tag_name(params[:tag_name])
+    elsif params[:track_id].present?
+      with_track(params[:track_id])
+    else
+      all
+    end
+    
+    # Filter for public playlists unless user is provided
+    playlists = playlists.public_playlists unless user
+    
+    # Apply optional sorting
+    playlists = playlists.recent if params[:sort] == 'recent'
+    
+    playlists
+  end
   
   # Get all tracks as full objects in playlist order
   def full_tracks
     Track.find_in_order(tracks)
   end
   
-  # Get all tags as full objects in order they were added
-  def full_tags
-    Tag.find_in_order(tags)
+  # Method to get paginated tracks
+  def paginated_tracks(params)
+    page = [params[:page].to_i, 1].max
+    per_page = [[params[:per_page].to_i, 20].max, 100].min
+    
+    tracks_array = full_tracks
+    offset = (page - 1) * per_page
+    result = tracks_array[offset, per_page] || []
+    
+    {
+      records: result,
+      meta: {
+        total_count: tracks_array.size,
+        current_page: page,
+        per_page: per_page,
+        total_pages: (tracks_array.size.to_f / per_page).ceil
+      }
+    }
   end
   
   # Scopes for common queries
   scope :public_playlists, -> { where(is_public: true) }
   scope :by_owner, ->(owner_id) { where(owner_id: owner_id) }
-  scope :with_tag, ->(tag_id) { where("? = ANY(tags)", tag_id.to_s) }
-  scope :with_track, ->(track_id) { where("? = ANY(tracks)", track_id.to_s) }
-  scop
+  scope :with_track, ->(track_id) { where("? = ANY(tracks)", track_id) }
+  scope :recent, -> { order(created_at: :desc) }
 
   private
   
@@ -183,23 +176,12 @@ end
   def validate_track_ids
     return if tracks.blank?
     
-    existing_tracks = Track.where(id: tracks).pluck(:id).map(&:to_s)
+    # Verify all track IDs exist in the database
+    existing_tracks = Track.where(id: tracks).pluck(:id)
     missing_tracks = tracks - existing_tracks
     
     if missing_tracks.any?
       errors.add(:tracks, "Tracks with IDs #{missing_tracks.join(', ')} not found")
-    end
-  end
-  
-  # Validate that all tag IDs reference existing tags
-  def validate_tag_ids
-    return if tags.blank?
-    
-    existing_tags = Tag.where(id: tags).pluck(:id).map(&:to_s)
-    missing_tags = tags - existing_tags
-    
-    if missing_tags.any?
-      errors.add(:tags, "Tags with IDs #{missing_tags.join(', ')} not found")
     end
   end
 end

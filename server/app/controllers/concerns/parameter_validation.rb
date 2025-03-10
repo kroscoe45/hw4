@@ -1,9 +1,13 @@
 # parameter should be validated BEFORE creating the actual resource
 # in the controller, basically on the first line of the api function thing
 
+# Parameter should be validated BEFORE creating the actual resource
+# in the controller, basically on the first line of the api function thing
+
 module ParameterValidation
   extend ActiveSupport::Concern
-  # convert string ids to array of integers with error handling
+  
+  # Convert string ids to array of integers with error handling
   # [converted_array, nil] on success
   # [nil, error_response] on failure
   # does not validate existence
@@ -36,6 +40,31 @@ module ParameterValidation
     
     [result, nil]
   end
+  
+  # Convert a single ID parameter to integer
+  # [converted_id, nil] on success
+  # [nil, error_response] on failure
+  def parse_id(key, required: true)
+    value = params[key]
+    
+    if value.nil?
+      return [nil, nil] unless required
+      return [nil, {
+        json: { error: "#{key} parameter is required" }, 
+        status: :bad_request
+      }]
+    end
+    
+    begin
+      [Integer(value.to_s), nil]
+    rescue ArgumentError
+      [nil, {
+        json: { error: "#{key} must be a valid integer" },
+        status: :bad_request
+      }]
+    end
+  end
+  
   # validate tag name
   # [name, nil] on success
   # [nil, error_response] on failure

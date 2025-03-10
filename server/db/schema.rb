@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2025_03_06_185245) do
+ActiveRecord::Schema[8.0].define(version: 2025_03_10_005434) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -23,23 +23,22 @@ ActiveRecord::Schema[8.0].define(version: 2025_03_06_185245) do
     t.bigint "owner_id", null: false
     t.string "title", null: false
     t.boolean "is_public", default: false, null: false
-    t.string "tracks", default: [], array: true
-    t.string "tags", default: [], array: true
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.bigint "tracks", default: [], array: true
     t.index ["is_public"], name: "index_playlists_on_is_public"
     t.index ["owner_id"], name: "index_playlists_on_owner_id"
-    t.index ["tags"], name: "index_playlists_on_tags", using: :gin
     t.index ["tracks"], name: "index_playlists_on_tracks", using: :gin
   end
 
   create_table "tags", force: :cascade do |t|
     t.string "name", null: false
-    t.jsonb "attached_to", default: "{}", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
-    t.index ["attached_to"], name: "index_tags_on_attached_to", using: :gin
-    t.index ["name"], name: "index_tags_on_name", unique: true
+    t.bigint "playlist_id", null: false
+    t.bigint "user_id", null: false
+    t.index ["playlist_id"], name: "index_tags_on_playlist_id"
+    t.index ["user_id"], name: "index_tags_on_user_id"
     t.check_constraint "char_length(name::text) >= 2 AND char_length(name::text) <= 20", name: "check_tag_name_length"
   end
 
@@ -56,6 +55,18 @@ ActiveRecord::Schema[8.0].define(version: 2025_03_06_185245) do
     t.index ["title"], name: "index_tracks_on_title"
   end
 
+  create_table "user_votes", force: :cascade do |t|
+    t.bigint "user_id", null: false
+    t.bigint "tag_id", null: false
+    t.string "vote_type", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tag_id"], name: "index_user_votes_on_tag_id"
+    t.index ["user_id", "tag_id"], name: "index_user_votes_on_user_id_and_tag_id", unique: true
+    t.index ["user_id"], name: "index_user_votes_on_user_id"
+    t.check_constraint "vote_type::text = ANY (ARRAY['up'::character varying, 'down'::character varying]::text[])", name: "check_vote_type"
+  end
+
   create_table "users", force: :cascade do |t|
     t.string "auth0_id", null: false
     t.string "roles", default: "user", null: false
@@ -69,4 +80,8 @@ ActiveRecord::Schema[8.0].define(version: 2025_03_06_185245) do
   end
 
   add_foreign_key "playlists", "users", column: "owner_id"
+  add_foreign_key "tags", "playlists"
+  add_foreign_key "tags", "users"
+  add_foreign_key "user_votes", "tags"
+  add_foreign_key "user_votes", "users"
 end

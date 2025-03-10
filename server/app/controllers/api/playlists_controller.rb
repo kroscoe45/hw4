@@ -7,8 +7,12 @@ class Api::PlaylistsController < ApplicationController
   # GET /api/playlists
   def index
     @playlists = Playlist.filter_by_params(params, current_user)
-    @playlists = paginate(@playlists)
-    render json: @playlists
+    paginated = @playlists.paginate(params)
+    
+    render json: {
+      playlists: paginated[:records],
+      meta: paginated[:meta]
+    }
   end
 
   # GET /api/playlists/:id
@@ -17,39 +21,7 @@ class Api::PlaylistsController < ApplicationController
       return forbidden
     end
 
-    tracks = @playlist.full_tracks
-    tags = @playlist.full_tags
-
-    user_votes = {}
-    if current_user
-      tags.each do |tag|
-        user_votes[tag.id] = tag.user_vote(current_user.id, @playlist.id)
-      end
-    end
-
-    response = {
-      id: @playlist.id,
-      title: @playlist.title,
-      is_public: @playlist.is_public,
-      owner: {
-        id: @playlist.owner.id,
-        username: @playlist.owner.username
-      },
-      tracks: tracks.map { |t| t.as_json(only: [:id, :title, :artist, :added_at]) },
-      tags: tags.map { |t|
-        tag_json = t.as_json(only: [:id, :name])
-        vote_counts = t.vote_counts(@playlist.id)
-        tag_json.merge(
-          votes_up: vote_counts[:up],
-          votes_down: vote_counts[:down],
-          user_vote: current_user ? user_votes[t.id] : nil
-        )
-      },
-      created_at: @playlist.created_at,
-      updated_at: @playlist.updated_at
-    }
-
-    render json: response
+    render json: @playlist, scope: current_user
   end
 
   # GET /api/playlists/:id/tracks
@@ -58,15 +30,15 @@ class Api::PlaylistsController < ApplicationController
       return forbidden
     end
 
-    tracks = @playlist.full_tracks
     if params[:page].present?
-      tracks = paginate(tracks)
+      paginated = @playlist.paginated_tracks(params)
+      
       render json: {
-        tracks: tracks.map { |t| t.as_json(only: [:id, :title, :artist, :added_at]) },
-        meta: pagination_meta(tracks)
+        tracks: paginated[:records].map { |t| t.as_json(only: [:id, :title, :artist, :added_at]) },
+        meta: paginated[:meta]
       }
     else
-      render json: tracks.map { |t| t.as_json(only: [:id, :title, :artist, :added_at]) }
+      render json: @playlist.full_tracks.map { |t| t.as_json(only: [:id, :title, :artist, :added_at]) }
     end
   end
 
@@ -76,7 +48,7 @@ class Api::PlaylistsController < ApplicationController
     if @playlist.save
       render json: @playlist, status: :created, location: api_playlist_url(@playlist)
     else
-      render json: { errors: @playlist.errors.full_messages }, status: :unprocessable_entity
+      unprocessable_entity(@playlist.errors)
     end
   end
 
@@ -85,7 +57,7 @@ class Api::PlaylistsController < ApplicationController
     if @playlist.update(playlist_params)
       render json: @playlist
     else
-      render json: { errors: @playlist.errors.full_messages }, status: :unprocessable_entity
+      unprocessable_entity(@playlist.errors)
     end
   end
 
@@ -97,25 +69,22 @@ class Api::PlaylistsController < ApplicationController
 
   # POST /api/playlists/:id/tracks
   def add_track
-    track_id = params[:track_id]
-    if track_id.blank?
-      return render json: { error: "Track ID is required" }, status: :bad_request
-    end
-
+    track_id, error = parse_id(:track_id)
+    return render error if error
+    
     if @playlist.add_track(track_id)
       render json: @playlist.full_tracks
     else
-      render json: { errors: @playlist.errors.full_messages }, status: :unprocessable_entity
+      unprocessable_entity(@playlist.errors)
     end
   end
 
   # DELETE /api/playlists/:id/tracks/:track_id
   def remove_track
-    track_id = params[:track_id]
-    if @playlist.remove_track(track_id)
+    if @playlist.remove_track(params[:track_id])
       render json: @playlist.full_tracks
     else
-      render json: { errors: @playlist.errors.full_messages }, status: :unprocessable_entity
+      unprocessable_entity(@playlist.errors)
     end
   end
 
@@ -127,42 +96,70 @@ class Api::PlaylistsController < ApplicationController
     if @playlist.update_track_list(track_ids)
       render json: @playlist.full_tracks
     else
-      render json: { errors: @playlist.errors.full_messages }, status: :unprocessable_entity
+      unprocessable_entity(@playlist.errors)
     end
   end
 
   # POST /api/playlists/:id/tags
   def add_tag
-    tag_name, error = validate_tag_name(params[:tag_name])
+    tag_name = params[:tag_name]
+    
+    unless tag_name.present?
+      return render json: { error: "Tag name is required" }, status: :bad_request
+    end
+    
+    tag_name, error = validate_tag_name(tag_name)
     return render error if error
-
-    Tag.transaction do
-      tag = Tag.find_or_initialize_by(name: tag_name)
-      if @playlist.tags.exists?(name: tag_name)
-        return render json: { error: "Tag already attached to playlist" }, status: :conflict
-      end
-      if tag.new_record?
-        tag.attached_to = create_attached_to
-        unless tag.save
-          return render json: { errors: tag.errors.full_messages }, status: :unprocessable_entity
-        end
-      end
-      if @playlist.add_tag(tag.name, current_user.id)
-        render json: @playlist.full_tags
-      else
-        render json: { errors: @playlist.errors.full_messages }, status: :unprocessable_entity
-      end
+    
+    tag = @playlist.add_tag(tag_name, current_user.id)
+    
+    if tag&.persisted?
+      render json: @playlist.full_tags
+    else
+      render json: { errors: tag&.errors&.full_messages || ["Failed to add tag"] }, status: :unprocessable_entity
+    end
+  end
+  
+  # DELETE /api/playlists/:id/tags/:tag_id
+  def remove_tag
+    tag = @playlist.tags.find_by(id: params[:tag_id])
+    
+    # Only allow removal if user is playlist owner or tag creator
+    unless current_user.owns?(@playlist) || (tag && tag.user_id == current_user.id)
+      return forbidden
+    end
+    
+    if @playlist.remove_tag(params[:tag_id])
+      render json: @playlist.full_tags
+    else
+      render json: { errors: ["Failed to remove tag"] }, status: :unprocessable_entity
     end
   end
 
-  # DELETE /api/playlists/:id/tags/:tag_name
-  def remove_tag
-    tag_name = params[:tag_name]
-    if @playlist.remove_tag(tag_name)
-      render json: @playlist.full_tags
-    else
-      render json: { errors: @playlist.errors.full_messages }, status: :unprocessable_entity
+  # POST /api/playlists/:id/tags/:tag_id/vote
+  def vote_tag
+    vote_type = params[:vote_type]
+    
+    unless ['up', 'down', 'none'].include?(vote_type)
+      return render json: { error: "Vote type must be 'up', 'down', or 'none'" }, status: :bad_request
     end
+    
+    tag = Tag.find(params[:tag_id])
+    result = tag.add_vote(current_user.id, @playlist.id, vote_type)
+    
+    if result
+      render json: { 
+        id: tag.id,
+        name: tag.name,
+        votes_up: tag.vote_counts[:up],
+        votes_down: tag.vote_counts[:down],
+        user_vote: tag.user_vote(current_user.id)
+      }
+    else
+      unprocessable_entity(tag.errors)
+    end
+  rescue ActiveRecord::RecordNotFound
+    not_found
   end
 
   private
@@ -176,27 +173,9 @@ class Api::PlaylistsController < ApplicationController
   def playlist_params
     params.require(:playlist).permit(:title, :is_public)
   end
-
-  def create_attached_to
-    {
-      "vote_up" => [],
-      "vote_down" => [],
-      "suggested_by" => current_user.id.to_s
-    }
-  end
-
-  def paginate(collection)
-    page = [params[:page].to_i, 1].max
-    per_page = [[params[:per_page].to_i, 1].max, 100].min
-    collection.limit(per_page).offset((page - 1) * per_page)
-  end
-
-  def pagination_meta(collection)
-    {
-      total_count: collection.size,
-      current_page: params[:page].to_i,
-      per_page: params[:per_page].to_i,
-      total_pages: (collection.size.to_f / params[:per_page].to_i).ceil
-    }
+  
+  # Consistent error handling
+  def unprocessable_entity(errors)
+    render json: { errors: errors.full_messages || errors }, status: :unprocessable_entity
   end
 end
